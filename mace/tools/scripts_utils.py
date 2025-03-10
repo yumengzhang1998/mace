@@ -21,7 +21,7 @@ from torch.optim.swa_utils import SWALR, AveragedModel
 
 from mace import data, modules, tools
 from mace.tools.train import SWAContainer
-
+from torch_geometric.data import Data
 
 @dataclasses.dataclass
 class SubsetCollection:

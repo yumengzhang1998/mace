@@ -5,7 +5,7 @@
 ###########################################################################################
 
 from typing import Optional, Sequence
-
+from torch_geometric.data import Data
 import torch.utils.data
 
 from mace.tools import (
@@ -218,6 +218,86 @@ class AtomicData(torch_geometric.data.Data):
             forces_weight=forces_weight,
             stress_weight=stress_weight,
             virials_weight=virials_weight,
+            forces=forces,
+            energy=energy,
+            stress=stress,
+            virials=virials,
+            dipole=dipole,
+            charges=charges,
+        )
+    @classmethod
+    def from_data(
+        cls,
+        data: Data,
+        z_table: AtomicNumberTable,
+        cutoff: float,
+        heads: Optional[list] = None,
+        pbc: Optional[torch.Tensor] = None,  # Periodic Boundary Conditions
+        cell: Optional[torch.Tensor] = None,  # Unit cell matrix
+        weight: float = 1.0,
+        energy_weight: float = 1.0,
+        forces_weight: float = 1.0,
+        stress_weight: float = 1.0,
+        virials_weight: float = 1.0,
+    ) -> "AtomicData":
+        if heads is None:
+            heads = ["default"]
+
+        # Ensure graph connectivity (if not provided, generate it)
+        if hasattr(data, "edge_index") and data.edge_index is not None:
+            edge_index = data.edge_index
+            shifts = data.shifts if hasattr(data, "shifts") else torch.zeros_like(data.pos)
+            unit_shifts = data.unit_shifts if hasattr(data, "unit_shifts") else torch.zeros_like(data.pos)
+        else:
+            edge_index, shifts, unit_shifts, cell = get_neighborhood(
+                positions=data.pos.numpy(),
+                cutoff=cutoff,
+                pbc=pbc if pbc is not None else None,
+                cell=cell.numpy() if cell is not None else None,
+            )
+
+        # Convert atomic numbers to indices for one-hot encoding
+        indices = atomic_numbers_to_indices(data.z.numpy(), z_table=z_table)
+        node_attrs = to_one_hot(
+            torch.tensor(indices, dtype=torch.long).unsqueeze(-1),
+            num_classes=len(z_table),
+        )
+
+        # Determine head index for multi-head models
+        try:
+            head = torch.tensor(heads.index(data.head), dtype=torch.long)
+        except (ValueError, AttributeError):
+            head = torch.tensor(len(heads) - 1, dtype=torch.long)
+
+        # Convert optional properties (forces, energy, stress, virials, etc.)
+        forces = data.forces if hasattr(data, "forces") else None
+        energy = data.y if hasattr(data, "y") else None
+        stress = (
+            voigt_to_matrix(data.stress).unsqueeze(0)
+            if hasattr(data, "stress") and data.stress is not None
+            else None
+        )
+        virials = (
+            voigt_to_matrix(data.virials).unsqueeze(0)
+            if hasattr(data, "virials") and data.virials is not None
+            else None
+        )
+        dipole = data.dipole.unsqueeze(0) if hasattr(data, "dipole") and data.dipole is not None else None
+        charges = data.charges if hasattr(data, "charges") else None
+
+        return cls(
+            edge_index=edge_index if hasattr(data, "edge_index") else torch.tensor(edge_index, dtype=torch.long),
+            positions=data.pos,
+            shifts=shifts,
+            unit_shifts=unit_shifts,
+            cell=torch.tensor(cell, dtype=torch.get_default_dtype()) if cell is not None else torch.zeros((3, 3)),
+            node_attrs=node_attrs,
+            weight=torch.tensor(weight, dtype=torch.get_default_dtype()),
+            head=head,
+            energy_weight=torch.tensor(energy_weight, dtype=torch.get_default_dtype()),
+            forces_weight=torch.tensor(forces_weight, dtype=torch.get_default_dtype()),
+            stress_weight=torch.tensor(stress_weight, dtype=torch.get_default_dtype()),
+            virials_weight=torch.tensor(virials_weight, dtype=torch.get_default_dtype()),
             forces=forces,
             energy=energy,
             stress=stress,
