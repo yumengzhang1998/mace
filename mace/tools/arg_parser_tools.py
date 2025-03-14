@@ -93,6 +93,7 @@ def check_args(args):
     # Loss and optimization
     # Check Stage Two loss start
     if args.start_swa is not None:
+        print("start_swa is not None, setting swa to True")
         args.swa = True
         log_messages.append(
             (
@@ -102,6 +103,7 @@ def check_args(args):
         )
 
     if args.swa:
+        print("swa is True, setting start_swa to max(1, max_num_epochs // 4 * 3)")
         if args.start_swa is None:
             args.start_swa = max(1, args.max_num_epochs // 4 * 3)
         if args.start_swa > args.max_num_epochs:

@@ -113,6 +113,13 @@ def get_atomic_number_table_from_zs(zs: Iterable[int]) -> AtomicNumberTable:
         z_set.add(z)
     return AtomicNumberTable(sorted(list(z_set)))
 
+def get_atomic_number_table_from_zs_data(zs: Iterable[int]) -> AtomicNumberTable:
+    z_set = set()
+    for z in zs:
+        z_set.add(z.item())
+    return AtomicNumberTable(sorted(list(z_set)))
+
+
 
 def atomic_numbers_to_indices(
     atomic_numbers: np.ndarray, z_table: AtomicNumberTable

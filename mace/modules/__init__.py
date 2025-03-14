@@ -21,6 +21,7 @@ from .blocks import (
     RealAgnosticResidualInteractionBlock,
     ResidualElementDependentInteractionBlock,
     ScaleShiftBlock,
+    LinearNodeEmbeddingBlockwithcharge,
 )
 from .loss import (
     DipoleSingleLoss,
@@ -39,6 +40,8 @@ from .models import (
     EnergyDipolesMACE,
     ScaleShiftBOTNet,
     ScaleShiftMACE,
+    ScaleShiftMACE_with_charge,
+    ScaleShiftMACE_with_charge_after,
 )
 from .radial import BesselBasis, GaussianBasis, PolynomialCutoff, ZBLBasis
 from .symmetric_contraction import SymmetricContraction
@@ -91,6 +94,7 @@ __all__ = [
     "BesselBasis",
     "GaussianBasis",
     "MACE",
+    "ScaleShiftMACE_with_charge",
     "ScaleShiftMACE",
     "BOTNet",
     "ScaleShiftBOTNet",

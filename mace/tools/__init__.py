@@ -28,6 +28,7 @@ from .utils import (
     compute_rel_rmse,
     compute_rmse,
     get_atomic_number_table_from_zs,
+    get_atomic_number_table_from_zs_data,
     get_tag,
     setup_logger,
 )

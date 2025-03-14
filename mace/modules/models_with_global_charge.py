@@ -4,7 +4,6 @@
 # This program is distributed under the MIT License (see MIT.md)
 ###########################################################################################
 
-from platform import node
 from typing import Any, Callable, Dict, List, Optional, Type, Union
 
 import numpy as np
@@ -22,13 +21,11 @@ from .blocks import (
     InteractionBlock,
     LinearDipoleReadoutBlock,
     LinearNodeEmbeddingBlock,
-    LinearNodeEmbeddingBlockwithcharge,
     LinearReadoutBlock,
     NonLinearDipoleReadoutBlock,
     NonLinearReadoutBlock,
     RadialEmbeddingBlock,
     ScaleShiftBlock,
-    LinearNodeEmbeddingBlockwithcharge,
 )
 from .utils import (
     compute_fixed_charge_dipole,
@@ -42,7 +39,7 @@ from .utils import (
 
 
 @compile_mode("script")
-class MACE(torch.nn.Module):
+class MACE_with_charge(torch.nn.Module):
     def __init__(
         self,
         r_max: float,
@@ -66,6 +63,7 @@ class MACE(torch.nn.Module):
         radial_type: Optional[str] = "bessel",
         heads: Optional[List[str]] = None,
         cueq_config: Optional[Dict[str, Any]] = None,
+        charge_embedding_dim: Optional[int] = 1,
     ):
         super().__init__()
         self.register_buffer(
@@ -83,11 +81,11 @@ class MACE(torch.nn.Module):
         if isinstance(correlation, int):
             correlation = [correlation] * num_interactions
         # Embedding
-        self.node_attr_irreps = node_attr_irreps = o3.Irreps([(num_elements, (0, 1))])
-        self.node_feats_irreps = node_feats_irreps = o3.Irreps([(hidden_irreps.count(o3.Irrep(0, 1)), (0, 1))])
+        node_attr_irreps = o3.Irreps([(num_elements, (0, 1))])
+        node_feats_irreps = o3.Irreps([(hidden_irreps.count(o3.Irrep(0, 1)), (0, 1))])
         self.node_embedding = LinearNodeEmbeddingBlock(
-            irreps_in=self.node_attr_irreps,
-            irreps_out=self.node_feats_irreps,
+            irreps_in=node_attr_irreps,
+            irreps_out=node_feats_irreps,
             cueq_config=cueq_config,
         )
         self.radial_embedding = RadialEmbeddingBlock(
@@ -194,6 +192,7 @@ class MACE(torch.nn.Module):
                         hidden_irreps, o3.Irreps(f"{len(heads)}x0e"), cueq_config
                     )
                 )
+        self.charge_projection = torch.nn.Linear(1, charge_embedding_dim)
 
     def forward(
         self,
@@ -295,6 +294,7 @@ class MACE(torch.nn.Module):
             energies.append(energy)
             node_energies_list.append(node_energies)
         # Concatenate node features
+        print('lenth of node feature list',len(node_feats_list))
         node_feats_out = torch.cat(node_feats_list, dim=-1)
 
         # Sum over energy contributions
@@ -1124,324 +1124,4 @@ class EnergyDipolesMACE(torch.nn.Module):
             "dipole": total_dipole,
             "atomic_dipoles": atomic_dipoles,
         }
-        return output
-
-
-@compile_mode("script")
-class ScaleShiftMACE_with_charge(MACE):
-    def __init__(
-        self,
-        atomic_inter_scale: float,
-        atomic_inter_shift: float,
-        **kwargs,
-    ):
-        super().__init__(**kwargs)
-        self.scale_shift = ScaleShiftBlock(
-            scale=atomic_inter_scale, shift=atomic_inter_shift
-        )
-        charge_embedding_dim: Optional[int] = 32
-        self.node_embedding = LinearNodeEmbeddingBlockwithcharge(
-            irreps_in=self.node_attr_irreps,  # Original node embedding size
-            irreps_out=self.node_feats_irreps,  # Keep output the same
-            charge_embedding_dim=charge_embedding_dim,  # Size of charge embedding
-        )
-
-        charge_embedding_dim: Optional[int] = 32
-        self.charge_embed = torch.nn.Linear(1, charge_embedding_dim) 
-    def forward(
-        self,
-        data: Dict[str, torch.Tensor],
-        training: bool = False,
-        compute_force: bool = True,
-        compute_virials: bool = False,
-        compute_stress: bool = False,
-        compute_displacement: bool = False,
-        compute_hessian: bool = False,
-    ) -> Dict[str, Optional[torch.Tensor]]:
-        # Setup
-        data["positions"].requires_grad_(True)
-        data["node_attrs"].requires_grad_(True)
-        num_graphs = data["ptr"].numel() - 1
-        num_atoms_arange = torch.arange(data["positions"].shape[0])
-        node_heads = (
-            data["head"][data["batch"]]
-            if "head" in data
-            else torch.zeros_like(data["batch"])
-        )
-        displacement = torch.zeros(
-            (num_graphs, 3, 3),
-            dtype=data["positions"].dtype,
-            device=data["positions"].device,
-        )
-        if compute_virials or compute_stress or compute_displacement:
-            (
-                data["positions"],
-                data["shifts"],
-                displacement,
-            ) = get_symmetric_displacement(
-                positions=data["positions"],
-                unit_shifts=data["unit_shifts"],
-                cell=data["cell"],
-                edge_index=data["edge_index"],
-                num_graphs=num_graphs,
-                batch=data["batch"],
-            )
-        batch = data["batch"]  # Shape: (num_nodes,) → Each atom's molecule ID in the batch
-
-
-        # Atomic energies
-        node_e0 = self.atomic_energies_fn(data["node_attrs"])[
-            num_atoms_arange, node_heads
-        ]
-        e0 = scatter_sum(
-            src=node_e0, index=data["batch"], dim=0, dim_size=num_graphs
-        )  # [n_graphs, num_heads]
-
-        # Embeddings
-        assert "charges" in data and "batch" in data, "Missing charge or batch information in input data."
-        node_feats = self.node_embedding(data["node_attrs"], data["charges"], data["batch"])
-        # node_feats = self.node_embedding(data["node_attrs"])
-        vectors, lengths = get_edge_vectors_and_lengths(
-            positions=data["positions"],
-            edge_index=data["edge_index"],
-            shifts=data["shifts"],
-        )
-        edge_attrs = self.spherical_harmonics(vectors)
-        edge_feats = self.radial_embedding(
-            lengths, data["node_attrs"], data["edge_index"], self.atomic_numbers
-        )
-        if hasattr(self, "pair_repulsion"):
-            pair_node_energy = self.pair_repulsion_fn(
-                lengths, data["node_attrs"], data["edge_index"], self.atomic_numbers
-            )
-        else:
-            pair_node_energy = torch.zeros_like(node_e0)
-        # Interactions
-        node_es_list = [pair_node_energy]
-        node_feats_list = []
-        for interaction, product, readout in zip(
-            self.interactions, self.products, self.readouts
-        ):
-            node_feats, sc = interaction(
-                node_attrs=data["node_attrs"],
-                node_feats=node_feats,
-                edge_attrs=edge_attrs,
-                edge_feats=edge_feats,
-                edge_index=data["edge_index"],
-            )
-            node_feats = product(
-                node_feats=node_feats, sc=sc, node_attrs=data["node_attrs"]
-            )
-            # print('Node feature shape:',node_feats.shape, '\n======================================================\n')
-            # [128,128] or [128, 512]
-            # step 1: Project charges to a higher dimension
-
-
-            node_feats_list.append(node_feats)
-            node_es_list.append(
-                readout(node_feats, node_heads)[num_atoms_arange, node_heads]
-            )  # {[n_nodes, ], }
-
-        # Concatenate node features
-        node_feats_out = torch.cat(node_feats_list, dim=-1)
-        # Sum over interactions
-        node_inter_es = torch.sum(
-            torch.stack(node_es_list, dim=0), dim=0
-        )  # [n_nodes, ]
-        node_inter_es = self.scale_shift(node_inter_es, node_heads)
-
-        # Sum over nodes in graph
-        inter_e = scatter_sum(
-            src=node_inter_es, index=data["batch"], dim=-1, dim_size=num_graphs
-        )  # [n_graphs,]
-
-        # Add E_0 and (scaled) interaction energy
-        total_energy = e0 + inter_e
-        node_energy = node_e0 + node_inter_es
-        forces, virials, stress, hessian = get_outputs(
-            energy=inter_e,
-            positions=data["positions"],
-            displacement=displacement,
-            cell=data["cell"],
-            training=training,
-            compute_force=compute_force,
-            compute_virials=compute_virials,
-            compute_stress=compute_stress,
-            compute_hessian=compute_hessian,
-        )
-        output = {
-            "energy": total_energy,
-            "node_energy": node_energy,
-            "interaction_energy": inter_e,
-            "forces": forces,
-            "virials": virials,
-            "stress": stress,
-            "hessian": hessian,
-            "displacement": displacement,
-            "node_feats": node_feats_out,
-        }
-
-        return output
-
-
-@compile_mode("script")
-class ScaleShiftMACE_with_charge_after(MACE):
-    def __init__(
-        self,
-        atomic_inter_scale: float,
-        atomic_inter_shift: float,
-        **kwargs,
-    ):
-        super().__init__(**kwargs)
-        self.scale_shift = ScaleShiftBlock(
-            scale=atomic_inter_scale, shift=atomic_inter_shift
-        )
-        charge_embedding_dim: Optional[int] = 32
-
-        self.charge_embed = torch.nn.Linear(1, charge_embedding_dim) 
-    def forward(
-        self,
-        data: Dict[str, torch.Tensor],
-        training: bool = False,
-        compute_force: bool = True,
-        compute_virials: bool = False,
-        compute_stress: bool = False,
-        compute_displacement: bool = False,
-        compute_hessian: bool = False,
-    ) -> Dict[str, Optional[torch.Tensor]]:
-        # Setup
-        data["positions"].requires_grad_(True)
-        data["node_attrs"].requires_grad_(True)
-        num_graphs = data["ptr"].numel() - 1
-        num_atoms_arange = torch.arange(data["positions"].shape[0])
-        node_heads = (
-            data["head"][data["batch"]]
-            if "head" in data
-            else torch.zeros_like(data["batch"])
-        )
-        displacement = torch.zeros(
-            (num_graphs, 3, 3),
-            dtype=data["positions"].dtype,
-            device=data["positions"].device,
-        )
-        if compute_virials or compute_stress or compute_displacement:
-            (
-                data["positions"],
-                data["shifts"],
-                displacement,
-            ) = get_symmetric_displacement(
-                positions=data["positions"],
-                unit_shifts=data["unit_shifts"],
-                cell=data["cell"],
-                edge_index=data["edge_index"],
-                num_graphs=num_graphs,
-                batch=data["batch"],
-            )
-        batch = data["batch"]  # Shape: (num_nodes,) → Each atom's molecule ID in the batch
-
-
-        # Atomic energies
-        node_e0 = self.atomic_energies_fn(data["node_attrs"])[
-            num_atoms_arange, node_heads
-        ]
-        e0 = scatter_sum(
-            src=node_e0, index=data["batch"], dim=0, dim_size=num_graphs
-        )  # [n_graphs, num_heads]
-
-        # Embeddings
-        assert "charges" in data and "batch" in data, "Missing charge or batch information in input data."
-        # node_feats = self.node_embedding(data["node_attrs"], data["charges"], data["batch"])
-        node_feats = self.node_embedding(data["node_attrs"])
-        vectors, lengths = get_edge_vectors_and_lengths(
-            positions=data["positions"],
-            edge_index=data["edge_index"],
-            shifts=data["shifts"],
-        )
-        edge_attrs = self.spherical_harmonics(vectors)
-        edge_feats = self.radial_embedding(
-            lengths, data["node_attrs"], data["edge_index"], self.atomic_numbers
-        )
-        if hasattr(self, "pair_repulsion"):
-            pair_node_energy = self.pair_repulsion_fn(
-                lengths, data["node_attrs"], data["edge_index"], self.atomic_numbers
-            )
-        else:
-            pair_node_energy = torch.zeros_like(node_e0)
-        # Interactions
-        node_es_list = [pair_node_energy]
-        node_feats_list = []
-        for interaction, product, readout in zip(
-            self.interactions, self.products, self.readouts
-        ):
-            node_feats, sc = interaction(
-                node_attrs=data["node_attrs"],
-                node_feats=node_feats,
-                edge_attrs=edge_attrs,
-                edge_feats=edge_feats,
-                edge_index=data["edge_index"],
-            )
-            node_feats = product(
-                node_feats=node_feats, sc=sc, node_attrs=data["node_attrs"]
-            )
-            node_feat_shape = node_feats.shape
-            # print('Node feature shape:',node_feats.shape, '\n======================================================\n')
-            # [128,128] or [128, 512]
-
-            # Step 2: Expand charges from (batch_size,) → (num_nodes, charge_dim)
-            expanded_charges = data["charges"][data["batch"]].unsqueeze(-1).to(torch.get_default_dtype())
-
-
-            # Step 3: Project to higher dimension
-            projected_charges = self.charge_embed(expanded_charges)  # Shape: (num_nodes, charge_dim)
-
-            # Step 4: Concatenate with node_feats
-            node_feats = torch.cat([node_feats, projected_charges], dim=-1)
-            self.final_projection_layer = torch.nn.Linear(node_feats.shape[-1], node_feat_shape[-1])
-
-            # Step 5: Apply projection layer to return to original shape
-            node_feats = self.final_projection_layer(node_feats)
-            node_feats_list.append(node_feats)
-            node_es_list.append(
-                readout(node_feats, node_heads)[num_atoms_arange, node_heads]
-            )  # {[n_nodes, ], }
-
-        # Concatenate node features
-        node_feats_out = torch.cat(node_feats_list, dim=-1)
-        # Sum over interactions
-        node_inter_es = torch.sum(
-            torch.stack(node_es_list, dim=0), dim=0
-        )  # [n_nodes, ]
-        node_inter_es = self.scale_shift(node_inter_es, node_heads)
-
-        # Sum over nodes in graph
-        inter_e = scatter_sum(
-            src=node_inter_es, index=data["batch"], dim=-1, dim_size=num_graphs
-        )  # [n_graphs,]
-
-        # Add E_0 and (scaled) interaction energy
-        total_energy = e0 + inter_e
-        node_energy = node_e0 + node_inter_es
-        forces, virials, stress, hessian = get_outputs(
-            energy=inter_e,
-            positions=data["positions"],
-            displacement=displacement,
-            cell=data["cell"],
-            training=training,
-            compute_force=compute_force,
-            compute_virials=compute_virials,
-            compute_stress=compute_stress,
-            compute_hessian=compute_hessian,
-        )
-        output = {
-            "energy": total_energy,
-            "node_energy": node_energy,
-            "interaction_energy": inter_e,
-            "forces": forces,
-            "virials": virials,
-            "stress": stress,
-            "hessian": hessian,
-            "displacement": displacement,
-            "node_feats": node_feats_out,
-        }
-
         return output

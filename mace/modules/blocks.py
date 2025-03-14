@@ -57,6 +57,42 @@ class LinearNodeEmbeddingBlock(torch.nn.Module):
     ) -> torch.Tensor:  # [n_nodes, irreps]
         return self.linear(node_attrs)
 
+@compile_mode("script")
+class LinearNodeEmbeddingBlockwithcharge(torch.nn.Module):
+    def __init__(
+        self,
+        irreps_in: o3.Irreps,
+        irreps_out: o3.Irreps,
+        charge_embedding_dim,
+        cueq_config: Optional[CuEquivarianceConfig] = None,
+    ):
+        super().__init__()
+        self.linear = Linear(
+            irreps_in=irreps_in, irreps_out=irreps_out, cueq_config=cueq_config
+        )
+        self.charge_embed = torch.nn.Linear(1, charge_embedding_dim)  
+
+        # Linear transformation to match original dimension
+
+        self.projection_layer = torch.nn.Linear(irreps_in.dim + charge_embedding_dim, irreps_in.dim)
+
+
+    def forward(
+        self,
+        node_attrs: torch.Tensor,
+        charges, 
+        batch
+    ) -> torch.Tensor:  # [n_nodes, irreps]
+        expanded_charges = charges.gather(0, batch).unsqueeze(-1).to(torch.get_default_dtype())  
+        charge_embeddings = self.charge_embed(expanded_charges)  
+        node_attrs_with_charge = torch.cat([node_attrs, charge_embeddings], dim=-1)  
+
+        # Project back to original feature dimension
+        projected_node_attrs = self.projection_layer(node_attrs_with_charge) 
+        return self.linear(projected_node_attrs)
+
+
+
 
 @compile_mode("script")
 class LinearReadoutBlock(torch.nn.Module):

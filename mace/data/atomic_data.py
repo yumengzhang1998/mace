@@ -15,7 +15,6 @@ from mace.tools import (
     torch_geometric,
     voigt_to_matrix,
 )
-
 from .neighborhood import get_neighborhood
 from .utils import Configuration
 
@@ -67,6 +66,7 @@ class AtomicData(torch_geometric.data.Data):
         # Check shapes
         num_nodes = node_attrs.shape[0]
 
+
         assert edge_index.shape[0] == 2 and len(edge_index.shape) == 2
         assert positions.shape == (num_nodes, 3)
         assert shifts.shape[1] == 3
@@ -84,7 +84,11 @@ class AtomicData(torch_geometric.data.Data):
         assert stress is None or stress.shape == (1, 3, 3)
         assert virials is None or virials.shape == (1, 3, 3)
         assert dipole is None or dipole.shape[-1] == 3
-        assert charges is None or charges.shape == (num_nodes,)
+        # assert charges is None or charges.shape == (num_nodes,)
+        assert charges is None or isinstance(charges, int) or \
+            (isinstance(charges, torch.Tensor) and (charges.shape == (num_nodes,) or charges.shape == (1,) or charges.dim() == 0)), \
+            f"Invalid charges shape: expected {(num_nodes,)}, (1,), or scalar, got {charges.shape if isinstance(charges, torch.Tensor) else type(charges)}"
+
         # Aggregate data
         data = {
             "num_nodes": num_nodes,
@@ -232,13 +236,13 @@ class AtomicData(torch_geometric.data.Data):
         z_table: AtomicNumberTable,
         cutoff: float,
         heads: Optional[list] = None,
-        pbc: Optional[torch.Tensor] = None,  # Periodic Boundary Conditions
-        cell: Optional[torch.Tensor] = None,  # Unit cell matrix
-        weight: float = 1.0,
-        energy_weight: float = 1.0,
-        forces_weight: float = 1.0,
-        stress_weight: float = 1.0,
-        virials_weight: float = 1.0,
+        pbc: Optional[torch.Tensor] = None,
+        cell: Optional[torch.Tensor] = None,
+        weight: Optional[float] = None,
+        energy_weight: Optional[float] = None,
+        forces_weight: Optional[float] = None,
+        stress_weight: Optional[float] = None,
+        virials_weight: Optional[float] = None,
     ) -> "AtomicData":
         if heads is None:
             heads = ["default"]
@@ -246,15 +250,16 @@ class AtomicData(torch_geometric.data.Data):
         # Ensure graph connectivity (if not provided, generate it)
         if hasattr(data, "edge_index") and data.edge_index is not None:
             edge_index = data.edge_index
-            shifts = data.shifts if hasattr(data, "shifts") else torch.zeros_like(data.pos)
-            unit_shifts = data.unit_shifts if hasattr(data, "unit_shifts") else torch.zeros_like(data.pos)
+            shifts = getattr(data, "shifts", torch.zeros_like(data.pos))
+            unit_shifts = getattr(data, "unit_shifts", torch.zeros_like(data.pos))
         else:
             edge_index, shifts, unit_shifts, cell = get_neighborhood(
                 positions=data.pos.numpy(),
                 cutoff=cutoff,
-                pbc=pbc if pbc is not None else None,
+                pbc=pbc.numpy() if pbc is not None else None,
                 cell=cell.numpy() if cell is not None else None,
             )
+            shifts = torch.tensor(shifts, dtype=torch.get_default_dtype())
 
         # Convert atomic numbers to indices for one-hot encoding
         indices = atomic_numbers_to_indices(data.z.numpy(), z_table=z_table)
@@ -269,35 +274,38 @@ class AtomicData(torch_geometric.data.Data):
         except (ValueError, AttributeError):
             head = torch.tensor(len(heads) - 1, dtype=torch.long)
 
-        # Convert optional properties (forces, energy, stress, virials, etc.)
-        forces = data.forces if hasattr(data, "forces") else None
-        energy = data.y if hasattr(data, "y") else None
-        stress = (
-            voigt_to_matrix(data.stress).unsqueeze(0)
-            if hasattr(data, "stress") and data.stress is not None
-            else None
+        # Set default values if not provided
+        cell = (
+            torch.tensor(cell, dtype=torch.get_default_dtype()) if cell is not None else torch.zeros((3, 3))
         )
-        virials = (
-            voigt_to_matrix(data.virials).unsqueeze(0)
-            if hasattr(data, "virials") and data.virials is not None
-            else None
-        )
+        weight = torch.tensor(weight if weight is not None else 1.0, dtype=torch.get_default_dtype())
+        energy_weight = torch.tensor(energy_weight if energy_weight is not None else 1.0, dtype=torch.get_default_dtype())
+        forces_weight = torch.tensor(forces_weight if forces_weight is not None else 1.0, dtype=torch.get_default_dtype())
+        stress_weight = torch.tensor(stress_weight if stress_weight is not None else 1.0, dtype=torch.get_default_dtype())
+        virials_weight = torch.tensor(virials_weight if virials_weight is not None else 1.0, dtype=torch.get_default_dtype())
+
+        # Convert optional properties
+        forces = getattr(data, "forces", None)
+        energy = getattr(data, "y", None)
+        energy = ensure_scalar(energy)
+        stress = voigt_to_matrix(data.stress).unsqueeze(0) if hasattr(data, "stress") and data.stress is not None else None
+        virials = voigt_to_matrix(data.virials).unsqueeze(0) if hasattr(data, "virials") and data.virials is not None else None
         dipole = data.dipole.unsqueeze(0) if hasattr(data, "dipole") and data.dipole is not None else None
-        charges = data.charges if hasattr(data, "charges") else None
+        charges = getattr(data, "charge", None)
 
         return cls(
-            edge_index=edge_index if hasattr(data, "edge_index") else torch.tensor(edge_index, dtype=torch.long),
+            edge_index=torch.tensor(edge_index, dtype=torch.long),
             positions=data.pos,
             shifts=shifts,
             unit_shifts=unit_shifts,
-            cell=torch.tensor(cell, dtype=torch.get_default_dtype()) if cell is not None else torch.zeros((3, 3)),
+            cell=cell,
             node_attrs=node_attrs,
-            weight=torch.tensor(weight, dtype=torch.get_default_dtype()),
+            weight=weight,
             head=head,
-            energy_weight=torch.tensor(energy_weight, dtype=torch.get_default_dtype()),
-            forces_weight=torch.tensor(forces_weight, dtype=torch.get_default_dtype()),
-            stress_weight=torch.tensor(stress_weight, dtype=torch.get_default_dtype()),
-            virials_weight=torch.tensor(virials_weight, dtype=torch.get_default_dtype()),
+            energy_weight=energy_weight,
+            forces_weight=forces_weight,
+            stress_weight=stress_weight,
+            virials_weight=virials_weight,
             forces=forces,
             energy=energy,
             stress=stress,
@@ -319,3 +327,13 @@ def get_data_loader(
         shuffle=shuffle,
         drop_last=drop_last,
     )
+
+
+import torch
+def ensure_scalar(tensor):
+    """Ensure the tensor is a scalar."""
+    if isinstance(tensor, torch.Tensor):
+        if tensor.dim() > 0:  # If it's not already a scalar
+            return torch.tensor(tensor.squeeze().item(), dtype=torch.get_default_dtype())  # Convert to scalar
+        return torch.tensor(tensor.item(), dtype=torch.get_default_dtype())  # Already scalar
+    return tensor 
