@@ -468,6 +468,23 @@ def _build_model(
             radial_type=args.radial_type,
             heads=heads,
         )
+    if args.model == "CoulumbMACE":
+        return  modules.LatentChargeMACE(
+            **model_config,
+            pair_repulsion=args.pair_repulsion,
+            distance_transform=args.distance_transform,
+            correlation=args.correlation,
+            gate=modules.gate_dict[args.gate],
+            interaction_cls_first=modules.interaction_classes[args.interaction_first],
+            MLP_irreps=o3.Irreps(args.MLP_irreps),
+            atomic_inter_scale=args.std,
+            atomic_inter_shift=[0.0] * len(heads),
+            radial_MLP=ast.literal_eval(args.radial_MLP),
+            radial_type=args.radial_type,
+            use_long_range=True,
+            use_coulomb=True,
+            heads=heads,
+        )
     if args.model == "ScaleShiftMACE":
         return modules.ScaleShiftMACE(
             **model_config,
@@ -501,35 +518,6 @@ def _build_model(
             interaction_cls_first=modules.interaction_classes[args.interaction_first],
             MLP_irreps=o3.Irreps(args.MLP_irreps),
         )
-    # if args.model == "AtomicDipolesMACE":
-    #     assert args.loss == "dipole", "Use dipole loss with AtomicDipolesMACE model"
-    #     assert (
-    #         args.error_table == "DipoleRMSE"
-    #     ), "Use error_table DipoleRMSE with AtomicDipolesMACE model"
-    #     return modules.AtomicDipolesMACE(
-    #         **model_config,
-    #         correlation=args.correlation,
-    #         gate=modules.gate_dict[args.gate],
-    #         interaction_cls_first=modules.interaction_classes[
-    #             "RealAgnosticInteractionBlock"
-    #         ],
-    #         MLP_irreps=o3.Irreps(args.MLP_irreps),
-    #     )
-    # if args.model == "EnergyDipolesMACE":
-    #     assert (
-    #         args.loss == "energy_forces_dipole"
-    #     ), "Use energy_forces_dipole loss with EnergyDipolesMACE model"
-    #     assert (
-    #         args.error_table == "EnergyDipoleRMSE"
-    #     ), "Use error_table EnergyDipoleRMSE with AtomicDipolesMACE model"
-    #     return modules.EnergyDipolesMACE(
-    #         **model_config,
-    #         correlation=args.correlation,
-    #         gate=modules.gate_dict[args.gate],
-    #         interaction_cls_first=modules.interaction_classes[
-    #             "RealAgnosticInteractionBlock"
-    #         ],
-    #         MLP_irreps=o3.Irreps(args.MLP_irreps),
-    #     )
+
     raise RuntimeError(f"Unknown model: '{args.model}'")
 

@@ -47,7 +47,8 @@ class BesselBasis(torch.nn.Module):
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:  # [..., 1]
-        numerator = torch.sin(self.bessel_weights * x)  # [..., num_basis]
+        numerator = torch.sin(self.bessel_weights.to(x.device, dtype=x.dtype) * x)
+
         return self.prefactor * (numerator / x)
 
     def __repr__(self):

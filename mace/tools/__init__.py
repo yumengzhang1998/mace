@@ -17,6 +17,7 @@ from .torch_tools import (
     voigt_to_matrix,
 )
 from .train import SWAContainer, evaluate, train
+from .al_train import SWAContainer, evaluate, train
 from .utils import (
     AtomicNumberTable,
     MetricsLogger,

@@ -1141,3 +1141,33 @@ class ScaleShiftBlock(torch.nn.Module):
             else f"{self.shift.item():.4f}"
         )
         return f"{self.__class__.__name__}(scale={formatted_scale}, shift={formatted_shift})"
+
+
+@compile_mode("script")
+class TrainableScaleShiftBlock(torch.nn.Module):
+    def __init__(self, scale: float, shift: float):
+        super().__init__()
+        self.scale = torch.nn.Parameter(
+            torch.tensor(scale, dtype=torch.get_default_dtype())
+        )
+        self.shift = torch.nn.Parameter(
+            torch.tensor(shift, dtype=torch.get_default_dtype())
+        )
+
+    def forward(self, x: torch.Tensor, head: torch.Tensor) -> torch.Tensor:
+        return (
+            torch.atleast_1d(self.scale)[head] * x + torch.atleast_1d(self.shift)[head]
+        )
+
+    def __repr__(self):
+        formatted_scale = (
+            ", ".join([f"{x.item():.4f}" for x in self.scale])
+            if self.scale.numel() > 1
+            else f"{self.scale.item():.4f}"
+        )
+        formatted_shift = (
+            ", ".join([f"{x.item():.4f}" for x in self.shift])
+            if self.shift.numel() > 1
+            else f"{self.shift.item():.4f}"
+        )
+        return f"{self.__class__.__name__}(scale={formatted_scale}, shift={formatted_shift})"

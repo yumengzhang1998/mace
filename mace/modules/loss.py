@@ -381,3 +381,38 @@ class WeightedEnergyForcesDipoleLoss(torch.nn.Module):
             f"{self.__class__.__name__}(energy_weight={self.energy_weight:.3f}, "
             f"forces_weight={self.forces_weight:.3f}, dipole_weight={self.dipole_weight:.3f})"
         )
+
+
+
+
+class WeightedEnergyForcesChargeLoss(torch.nn.Module):
+    def __init__(self, energy_weight=1.0, forces_weight=1.0, charge_penalty_weight=1.0) -> None:
+        super().__init__()
+        self.register_buffer(
+            "energy_weight",
+            torch.tensor(energy_weight, dtype=torch.get_default_dtype()),
+        )
+        self.register_buffer(
+            "forces_weight",
+            torch.tensor(forces_weight, dtype=torch.get_default_dtype()),
+        )
+        self.register_buffer(
+            "charge_penalty_weight",
+            torch.tensor(charge_penalty_weight, dtype=torch.get_default_dtype()),
+        )
+
+    def forward(self, ref, pred) -> torch.Tensor:
+        loss = (
+            self.energy_weight * weighted_mean_squared_error_energy(ref, pred)
+            + self.forces_weight * mean_squared_error_forces(ref, pred)
+        )
+        if "charge_penalty" in pred:
+            loss = loss + self.charge_penalty_weight * pred["charge_penalty"]
+        return loss
+
+    def __repr__(self):
+        return (
+            f"{self.__class__.__name__}(energy_weight={self.energy_weight:.3f}, "
+            f"forces_weight={self.forces_weight:.3f}, "
+            f"charge_penalty_weight={self.charge_penalty_weight:.3f})"
+        )

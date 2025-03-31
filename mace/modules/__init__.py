@@ -21,6 +21,7 @@ from .blocks import (
     RealAgnosticResidualInteractionBlock,
     ResidualElementDependentInteractionBlock,
     ScaleShiftBlock,
+    TrainableScaleShiftBlock,
     LinearNodeEmbeddingBlockwithcharge,
 )
 from .loss import (
@@ -32,6 +33,7 @@ from .loss import (
     WeightedEnergyForcesVirialsLoss,
     WeightedForcesLoss,
     WeightedHuberEnergyForcesStressLoss,
+    WeightedEnergyForcesChargeLoss,
 )
 from .models import (
     MACE,
@@ -42,6 +44,7 @@ from .models import (
     ScaleShiftMACE,
     ScaleShiftMACE_with_charge,
     ScaleShiftMACE_with_charge_after,
+    LatentChargeMACE,
 )
 from .radial import BesselBasis, GaussianBasis, PolynomialCutoff, ZBLBasis
 from .symmetric_contraction import SymmetricContraction
@@ -86,8 +89,10 @@ __all__ = [
     "LinearReadoutBlock",
     "EquivariantProductBasisBlock",
     "ScaleShiftBlock",
+    "TrainableScaleShiftBlock",
     "LinearDipoleReadoutBlock",
     "NonLinearDipoleReadoutBlock",
+    "LinearNodeEmbeddingBlockwithcharge",
     "InteractionBlock",
     "NonLinearReadoutBlock",
     "PolynomialCutoff",
@@ -95,6 +100,8 @@ __all__ = [
     "GaussianBasis",
     "MACE",
     "ScaleShiftMACE_with_charge",
+    "ScaleShiftMACE_with_charge_after",
+    "LatentChargeMACE"
     "ScaleShiftMACE",
     "BOTNet",
     "ScaleShiftBOTNet",
@@ -107,6 +114,7 @@ __all__ = [
     "DipoleSingleLoss",
     "WeightedEnergyForcesDipoleLoss",
     "WeightedHuberEnergyForcesStressLoss",
+    "WeightedEnergyForcesChargeLoss",
     "UniversalLoss",
     "SymmetricContraction",
     "interaction_classes",
