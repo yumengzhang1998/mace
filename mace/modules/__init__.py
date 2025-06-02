@@ -43,8 +43,10 @@ from .models import (
     ScaleShiftBOTNet,
     ScaleShiftMACE,
     ScaleShiftMACE_with_charge,
-    ScaleShiftMACE_with_charge_after,
+    LatentChargeplusGlobalMACE,
     LatentChargeMACE,
+    ChargeHeadMACE,
+    LatentChargeNormalizedMACE,
 )
 from .radial import BesselBasis, GaussianBasis, PolynomialCutoff, ZBLBasis
 from .symmetric_contraction import SymmetricContraction
@@ -100,9 +102,11 @@ __all__ = [
     "GaussianBasis",
     "MACE",
     "ScaleShiftMACE_with_charge",
-    "ScaleShiftMACE_with_charge_after",
     "LatentChargeMACE"
+    "LatentChargeplusGlobalMACE",
     "ScaleShiftMACE",
+    "ChargeHeadMACE",
+    "LatentChargeNormalizedMACE",
     "BOTNet",
     "ScaleShiftBOTNet",
     "AtomicDipolesMACE",

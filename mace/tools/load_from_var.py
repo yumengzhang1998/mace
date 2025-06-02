@@ -1,4 +1,3 @@
-from tkinter import E
 from typing import Dict, Tuple, Optional, List,Any
 from mace.tools.scripts_utils import SubsetCollection
 from mace.tools.multihead_tools import HeadConfig
@@ -131,6 +130,8 @@ def build_default_arg_parser_dict(defaults: dict = None) -> dict:
         "swa_virials_weight": defaults.get("swa_virials_weight", 10.0),
         "swa_stress_weight": defaults.get("swa_stress_weight", 10.0),
         "swa_dipole_weight": defaults.get("swa_dipole_weight", 1.0),
+        "scale": defaults.get("scale", True),
+        "shift": defaults.get("shift", True),
     }
 
     args = argparse.Namespace(**args_dict) 
@@ -448,7 +449,7 @@ def _build_model(
             interaction_cls_first=modules.interaction_classes[args.interaction_first],
             MLP_irreps=o3.Irreps(args.MLP_irreps),
             atomic_inter_scale=args.std,
-            atomic_inter_shift=[0.0] * len(heads),
+            atomic_inter_shift=args.mean,
             radial_MLP=ast.literal_eval(args.radial_MLP),
             radial_type=args.radial_type,
             heads=heads,
@@ -463,7 +464,7 @@ def _build_model(
             interaction_cls_first=modules.interaction_classes[args.interaction_first],
             MLP_irreps=o3.Irreps(args.MLP_irreps),
             atomic_inter_scale=args.std,
-            atomic_inter_shift=[0.0] * len(heads),
+            atomic_inter_shift=args.mean,
             radial_MLP=ast.literal_eval(args.radial_MLP),
             radial_type=args.radial_type,
             heads=heads,
@@ -478,11 +479,31 @@ def _build_model(
             interaction_cls_first=modules.interaction_classes[args.interaction_first],
             MLP_irreps=o3.Irreps(args.MLP_irreps),
             atomic_inter_scale=args.std,
-            atomic_inter_shift=[0.0] * len(heads),
+            # atomic_inter_shift=[0.0] * len(heads),
+            atomic_inter_shift=args.mean,
             radial_MLP=ast.literal_eval(args.radial_MLP),
             radial_type=args.radial_type,
             use_long_range=True,
             use_coulomb=True,
+            penalty = True,
+            heads=heads,
+        )
+    if args.model == "CoulumbMACE_with_charge":
+        return  modules.LatentChargeplusGlobalMACE(
+            **model_config,
+            pair_repulsion=args.pair_repulsion,
+            distance_transform=args.distance_transform,
+            correlation=args.correlation,
+            gate=modules.gate_dict[args.gate],
+            interaction_cls_first=modules.interaction_classes[args.interaction_first],
+            MLP_irreps=o3.Irreps(args.MLP_irreps),
+            atomic_inter_scale=args.std,
+            atomic_inter_shift=args.mean,
+            radial_MLP=ast.literal_eval(args.radial_MLP),
+            radial_type=args.radial_type,
+            use_long_range=True,
+            use_coulomb=True,
+            penalty = True,
             heads=heads,
         )
     if args.model == "ScaleShiftMACE":
@@ -498,6 +519,43 @@ def _build_model(
             atomic_inter_shift=args.mean,
             radial_MLP=ast.literal_eval(args.radial_MLP),
             radial_type=args.radial_type,
+            heads=heads,
+        )
+    if args.model == "ChargeHeadMACE":
+        return modules.ChargeHeadMACE(
+            **model_config,
+            pair_repulsion=args.pair_repulsion,
+            distance_transform=args.distance_transform,
+            correlation=args.correlation,
+            gate=modules.gate_dict[args.gate],
+            interaction_cls_first=modules.interaction_classes[args.interaction_first],
+            MLP_irreps=o3.Irreps(args.MLP_irreps),
+            atomic_inter_scale=args.std,
+            atomic_inter_shift=args.mean,
+            radial_MLP=ast.literal_eval(args.radial_MLP),
+            radial_type=args.radial_type,
+            use_long_range=True,
+            use_coulomb=True,
+            penalty = True,
+            heads=heads,
+        )
+    if args.model == "LatentChargeNormalizedMACE":
+        return modules.LatentChargeNormalizedMACE(
+            **model_config,
+            pair_repulsion=args.pair_repulsion,
+            distance_transform=args.distance_transform,
+            correlation=args.correlation,
+            gate=modules.gate_dict[args.gate],
+            interaction_cls_first=modules.interaction_classes[args.interaction_first],
+            MLP_irreps=o3.Irreps(args.MLP_irreps),
+            atomic_inter_scale=args.std,
+            atomic_inter_shift=args.mean,
+            radial_MLP=ast.literal_eval(args.radial_MLP),
+            radial_type=args.radial_type,
+            use_long_range=True,
+            use_coulomb=True,
+            penalty = True,
+            normalize_latent_charge = True,
             heads=heads,
         )
     if args.model == "FoundationMACE":

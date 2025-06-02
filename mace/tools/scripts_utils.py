@@ -627,7 +627,7 @@ def get_loss_fn(
         loss_fn = modules.WeightedEnergyForcesChargeLoss(
             energy_weight=args.energy_weight,
             forces_weight=args.forces_weight,
-            charge_penalty_weight=1,
+            charge_penalty_weight=args.charge_penalty_weight,
         )
 
     elif args.loss == "forces_only":

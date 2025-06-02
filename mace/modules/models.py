@@ -1285,325 +1285,6 @@ class ScaleShiftMACE_with_charge(MACE):
         return output
 
 
-@compile_mode("script")
-class TrainableScaleShiftMACE_with_charge(MACE):
-    def __init__(
-        self,
-        atomic_inter_scale: float,
-        atomic_inter_shift: float,
-        **kwargs,
-    ):
-        super().__init__(**kwargs)
-        self.scale_shift = TrainableScaleShiftBlock(
-            scale=atomic_inter_scale, shift=atomic_inter_shift
-        )
-        charge_embedding_dim: Optional[int] = 32
-        self.node_embedding = LinearNodeEmbeddingBlockwithcharge(
-            irreps_in=self.node_attr_irreps,  # Original node embedding size
-            irreps_out=self.node_feats_irreps,  # Keep output the same
-            charge_embedding_dim=charge_embedding_dim,  # Size of charge embedding
-        )
-
-        charge_embedding_dim: Optional[int] = 32
-        self.charge_embed = torch.nn.Linear(1, charge_embedding_dim) 
-    def forward(
-        self,
-        data: Dict[str, torch.Tensor],
-        training: bool = False,
-        compute_force: bool = True,
-        compute_virials: bool = False,
-        compute_stress: bool = False,
-        compute_displacement: bool = False,
-        compute_hessian: bool = False,
-    ) -> Dict[str, Optional[torch.Tensor]]:
-        # Setup
-        data["positions"].requires_grad_(True)
-        data["node_attrs"].requires_grad_(True)
-        num_graphs = data["ptr"].numel() - 1
-        num_atoms_arange = torch.arange(data["positions"].shape[0])
-        node_heads = (
-            data["head"][data["batch"]]
-            if "head" in data
-            else torch.zeros_like(data["batch"])
-        )
-        displacement = torch.zeros(
-            (num_graphs, 3, 3),
-            dtype=data["positions"].dtype,
-            device=data["positions"].device,
-        )
-        if compute_virials or compute_stress or compute_displacement:
-            (
-                data["positions"],
-                data["shifts"],
-                displacement,
-            ) = get_symmetric_displacement(
-                positions=data["positions"],
-                unit_shifts=data["unit_shifts"],
-                cell=data["cell"],
-                edge_index=data["edge_index"],
-                num_graphs=num_graphs,
-                batch=data["batch"],
-            )
-        batch = data["batch"]  # Shape: (num_nodes,) → Each atom's molecule ID in the batch
-
-
-        # Atomic energies
-        node_e0 = self.atomic_energies_fn(data["node_attrs"])[
-            num_atoms_arange, node_heads
-        ]
-        e0 = scatter_sum(
-            src=node_e0, index=data["batch"], dim=0, dim_size=num_graphs
-        )  # [n_graphs, num_heads]
-
-        # Embeddings
-        assert "charges" in data and "batch" in data, "Missing charge or batch information in input data."
-        node_feats = self.node_embedding(data["node_attrs"], data["charges"], data["batch"])
-        # node_feats = self.node_embedding(data["node_attrs"])
-        vectors, lengths = get_edge_vectors_and_lengths(
-            positions=data["positions"],
-            edge_index=data["edge_index"],
-            shifts=data["shifts"],
-        )
-        edge_attrs = self.spherical_harmonics(vectors)
-        edge_feats = self.radial_embedding(
-            lengths, data["node_attrs"], data["edge_index"], self.atomic_numbers
-        )
-        if hasattr(self, "pair_repulsion"):
-            pair_node_energy = self.pair_repulsion_fn(
-                lengths, data["node_attrs"], data["edge_index"], self.atomic_numbers
-            )
-        else:
-            pair_node_energy = torch.zeros_like(node_e0)
-        # Interactions
-        node_es_list = [pair_node_energy]
-        node_feats_list = []
-        for interaction, product, readout in zip(
-            self.interactions, self.products, self.readouts
-        ):
-            node_feats, sc = interaction(
-                node_attrs=data["node_attrs"],
-                node_feats=node_feats,
-                edge_attrs=edge_attrs,
-                edge_feats=edge_feats,
-                edge_index=data["edge_index"],
-            )
-            node_feats = product(
-                node_feats=node_feats, sc=sc, node_attrs=data["node_attrs"]
-            )
-            # print('Node feature shape:',node_feats.shape, '\n======================================================\n')
-            # [128,128] or [128, 512]
-            # step 1: Project charges to a higher dimension
-
-
-            node_feats_list.append(node_feats)
-            node_es_list.append(
-                readout(node_feats, node_heads)[num_atoms_arange, node_heads]
-            )  # {[n_nodes, ], }
-
-        # Concatenate node features
-        node_feats_out = torch.cat(node_feats_list, dim=-1)
-        # Sum over interactions
-        node_inter_es = torch.sum(
-            torch.stack(node_es_list, dim=0), dim=0
-        )  # [n_nodes, ]
-        node_inter_es = self.scale_shift(node_inter_es, node_heads)
-
-        # Sum over nodes in graph
-        inter_e = scatter_sum(
-            src=node_inter_es, index=data["batch"], dim=-1, dim_size=num_graphs
-        )  # [n_graphs,]
-
-        # Add E_0 and (scaled) interaction energy
-        total_energy = e0 + inter_e
-        node_energy = node_e0 + node_inter_es
-        forces, virials, stress, hessian = get_outputs(
-            energy=inter_e,
-            positions=data["positions"],
-            displacement=displacement,
-            cell=data["cell"],
-            training=training,
-            compute_force=compute_force,
-            compute_virials=compute_virials,
-            compute_stress=compute_stress,
-            compute_hessian=compute_hessian,
-        )
-        output = {
-            "energy": total_energy,
-            "node_energy": node_energy,
-            "interaction_energy": inter_e,
-            "forces": forces,
-            "virials": virials,
-            "stress": stress,
-            "hessian": hessian,
-            "displacement": displacement,
-            "node_feats": node_feats_out,
-        }
-
-        return output
-
-
-@compile_mode("script")
-class ScaleShiftMACE_with_charge_after(MACE):
-    def __init__(
-        self,
-        atomic_inter_scale: float,
-        atomic_inter_shift: float,
-        **kwargs,
-    ):
-        super().__init__(**kwargs)
-        self.scale_shift = ScaleShiftBlock(
-            scale=atomic_inter_scale, shift=atomic_inter_shift
-        )
-        charge_embedding_dim: Optional[int] = 32
-
-        self.charge_embed = torch.nn.Linear(1, charge_embedding_dim) 
-    def forward(
-        self,
-        data: Dict[str, torch.Tensor],
-        training: bool = False,
-        compute_force: bool = True,
-        compute_virials: bool = False,
-        compute_stress: bool = False,
-        compute_displacement: bool = False,
-        compute_hessian: bool = False,
-    ) -> Dict[str, Optional[torch.Tensor]]:
-        # Setup
-        data["positions"].requires_grad_(True)
-        data["node_attrs"].requires_grad_(True)
-        num_graphs = data["ptr"].numel() - 1
-        num_atoms_arange = torch.arange(data["positions"].shape[0])
-        node_heads = (
-            data["head"][data["batch"]]
-            if "head" in data
-            else torch.zeros_like(data["batch"])
-        )
-        displacement = torch.zeros(
-            (num_graphs, 3, 3),
-            dtype=data["positions"].dtype,
-            device=data["positions"].device,
-        )
-        if compute_virials or compute_stress or compute_displacement:
-            (
-                data["positions"],
-                data["shifts"],
-                displacement,
-            ) = get_symmetric_displacement(
-                positions=data["positions"],
-                unit_shifts=data["unit_shifts"],
-                cell=data["cell"],
-                edge_index=data["edge_index"],
-                num_graphs=num_graphs,
-                batch=data["batch"],
-            )
-        batch = data["batch"]  # Shape: (num_nodes,) → Each atom's molecule ID in the batch
-
-
-        # Atomic energies
-        node_e0 = self.atomic_energies_fn(data["node_attrs"])[
-            num_atoms_arange, node_heads
-        ]
-        e0 = scatter_sum(
-            src=node_e0, index=data["batch"], dim=0, dim_size=num_graphs
-        )  # [n_graphs, num_heads]
-
-        # Embeddings
-        assert "charges" in data and "batch" in data, "Missing charge or batch information in input data."
-        # node_feats = self.node_embedding(data["node_attrs"], data["charges"], data["batch"])
-        node_feats = self.node_embedding(data["node_attrs"])
-        vectors, lengths = get_edge_vectors_and_lengths(
-            positions=data["positions"],
-            edge_index=data["edge_index"],
-            shifts=data["shifts"],
-        )
-        edge_attrs = self.spherical_harmonics(vectors)
-        edge_feats = self.radial_embedding(
-            lengths, data["node_attrs"], data["edge_index"], self.atomic_numbers
-        )
-        if hasattr(self, "pair_repulsion"):
-            pair_node_energy = self.pair_repulsion_fn(
-                lengths, data["node_attrs"], data["edge_index"], self.atomic_numbers
-            )
-        else:
-            pair_node_energy = torch.zeros_like(node_e0)
-        # Interactions
-        node_es_list = [pair_node_energy]
-        node_feats_list = []
-        for interaction, product, readout in zip(
-            self.interactions, self.products, self.readouts
-        ):
-            node_feats, sc = interaction(
-                node_attrs=data["node_attrs"],
-                node_feats=node_feats,
-                edge_attrs=edge_attrs,
-                edge_feats=edge_feats,
-                edge_index=data["edge_index"],
-            )
-            node_feats = product(
-                node_feats=node_feats, sc=sc, node_attrs=data["node_attrs"]
-            )
-            node_feat_shape = node_feats.shape
-            # print('Node feature shape:',node_feats.shape, '\n======================================================\n')
-            # [128,128] or [128, 512]
-
-            # Step 2: Expand charges from (batch_size,) → (num_nodes, charge_dim)
-            expanded_charges = data["charges"][data["batch"]].unsqueeze(-1).to(torch.get_default_dtype())
-
-
-            # Step 3: Project to higher dimension
-            projected_charges = self.charge_embed(expanded_charges)  # Shape: (num_nodes, charge_dim)
-
-            # Step 4: Concatenate with node_feats
-            node_feats = torch.cat([node_feats, projected_charges], dim=-1)
-            self.final_projection_layer = torch.nn.Linear(node_feats.shape[-1], node_feat_shape[-1])
-
-            # Step 5: Apply projection layer to return to original shape
-            node_feats = self.final_projection_layer(node_feats)
-            node_feats_list.append(node_feats)
-            node_es_list.append(
-                readout(node_feats, node_heads)[num_atoms_arange, node_heads]
-            )  # {[n_nodes, ], }
-
-        # Concatenate node features
-        node_feats_out = torch.cat(node_feats_list, dim=-1)
-        # Sum over interactions
-        node_inter_es = torch.sum(
-            torch.stack(node_es_list, dim=0), dim=0
-        )  # [n_nodes, ]
-        node_inter_es = self.scale_shift(node_inter_es, node_heads)
-
-        # Sum over nodes in graph
-        inter_e = scatter_sum(
-            src=node_inter_es, index=data["batch"], dim=-1, dim_size=num_graphs
-        )  # [n_graphs,]
-
-        # Add E_0 and (scaled) interaction energy
-        total_energy = e0 + inter_e
-        node_energy = node_e0 + node_inter_es
-        forces, virials, stress, hessian = get_outputs(
-            energy=inter_e,
-            positions=data["positions"],
-            displacement=displacement,
-            cell=data["cell"],
-            training=training,
-            compute_force=compute_force,
-            compute_virials=compute_virials,
-            compute_stress=compute_stress,
-            compute_hessian=compute_hessian,
-        )
-        output = {
-            "energy": total_energy,
-            "node_energy": node_energy,
-            "interaction_energy": inter_e,
-            "forces": forces,
-            "virials": virials,
-            "stress": stress,
-            "hessian": hessian,
-            "displacement": displacement,
-            "node_feats": node_feats_out,
-        }
-
-        return output
-
 from torch_scatter import scatter
 import math
 
@@ -1720,6 +1401,309 @@ class LatentChargeMACE(ScaleShiftMACE):
         if self.penalty and hasattr(batch, "batch") and "charges" in batch:
             q_sum = scatter(q, batch.batch, dim=0, reduce="sum")         # [num_mol]
             q_target = batch["charges"]                             # [num_mol]
+            charge_penalty = self.lambda_charge * torch.sum((q_sum - q_target) ** 2)
+            output["charge_penalty"] = charge_penalty
+
+        return output
+    
+
+
+
+class LatentChargeplusGlobalMACE(ScaleShiftMACE_with_charge):
+    def __init__(
+        self,
+        atomic_inter_scale: float,
+        atomic_inter_shift: float,
+        use_long_range: bool = True,
+        use_coulomb: bool = True,
+        penalty: bool = False,
+        lambda_charge: float = 1.0,
+        **kwargs,
+    ):
+        super().__init__(
+            atomic_inter_scale=atomic_inter_scale,
+            atomic_inter_shift=atomic_inter_shift,
+            **kwargs,
+        )
+
+        self.use_long_range = use_long_range
+        self.use_coulomb = use_coulomb
+        self.penalty = penalty
+        self.lambda_charge = lambda_charge
+
+
+        self.q_head = None  # Defer initialization like in latent-only version
+
+    def compute_realspace_coulomb_batched(self, pos, q, batch_idx):
+        num_mol = batch_idx.max().item() + 1
+        energies = torch.zeros(num_mol, device=pos.device)
+        for mol_idx in range(num_mol):
+            mask = batch_idx == mol_idx
+            if mask.sum() < 2:
+                continue
+            pos_i = pos[mask]
+            q_i = q[mask]
+            rij = pos_i[:, None, :] - pos_i[None, :, :]
+            dist = torch.norm(rij + 1e-12, dim=-1)
+            qiqj = q_i[:, None] * q_i[None, :]
+            E_mat = torch.triu(qiqj / dist, diagonal=1)
+            energies[mol_idx] = torch.sum(E_mat)
+        return energies
+
+    def forward(
+        self,
+        data: Dict[str, torch.Tensor],
+        training: bool = False,
+        compute_force: bool = True,
+        compute_virials: bool = False,
+        compute_stress: bool = False,
+        compute_displacement: bool = False,
+        compute_hessian: bool = False,
+    ) -> Dict[str, Optional[torch.Tensor]]:
+        output = super().forward(
+            data,
+            training=training,
+            compute_force=compute_force,
+            compute_virials=compute_virials,
+            compute_stress=compute_stress,
+            compute_displacement=compute_displacement,
+            compute_hessian=compute_hessian,
+        )
+
+        node_feats = output["node_feats"]
+        if self.q_head is None:
+            self.q_head = torch.nn.Sequential(
+                torch.nn.Linear(node_feats.shape[-1], 32),
+                torch.nn.SiLU(),
+                torch.nn.Linear(32, 1),
+            ).to(node_feats.device)
+
+        q = self.q_head(node_feats).squeeze(-1)
+        output["latent_charges"] = q
+
+        if self.use_long_range and "positions" in data and "batch" in data:
+            if self.use_coulomb:
+                E_per_mol = self.compute_realspace_coulomb_batched(
+                    data["positions"], q, data["batch"]
+                )
+            else:
+                raise NotImplementedError("Ewald not implemented in this merged model")
+
+            output["long_range_energy"] = E_per_mol
+            output["energy"] = output["energy"] + E_per_mol
+
+        if self.penalty and "charges" in data:
+            q_sum = scatter(q, data["batch"], dim=0, reduce="sum")
+            q_target = data["charges"]
+            charge_penalty = self.lambda_charge * torch.sum((q_sum - q_target) ** 2)
+            output["charge_penalty"] = charge_penalty
+
+        return output
+    
+
+class ChargeHeadMACE(ScaleShiftMACE):
+    def __init__(
+        self,
+        atomic_inter_scale: float,
+        atomic_inter_shift: float,
+        lambda_charge: float = 1.0,
+        use_long_range: bool = True,
+        use_coulomb: bool = True,
+        penalty: bool = False,
+        charge_embedding_dim: int = 32,
+        **kwargs,
+    ):
+        super().__init__(
+            atomic_inter_scale=atomic_inter_scale,
+            atomic_inter_shift=atomic_inter_shift,
+            **kwargs,
+        )
+
+        self.lambda_charge = lambda_charge
+        self.use_long_range = use_long_range
+        self.use_coulomb = use_coulomb
+        self.penalty = penalty
+
+        self.q_proj = torch.nn.Linear(1, charge_embedding_dim)
+        self.q_head = None  # lazy init
+
+    def compute_realspace_coulomb_batched(self, pos, q, batch_idx):
+        num_mol = batch_idx.max().item() + 1
+        energies = torch.zeros(num_mol, device=pos.device)
+        for mol_idx in range(num_mol):
+            mask = batch_idx == mol_idx
+            if mask.sum() < 2:
+                continue
+            pos_i = pos[mask]
+            q_i = q[mask]
+            rij = pos_i[:, None, :] - pos_i[None, :, :]
+            dist = torch.norm(rij + 1e-12, dim=-1)
+            qiqj = q_i[:, None] * q_i[None, :]
+            E_mat = torch.triu(qiqj / dist, diagonal=1)
+            energies[mol_idx] = torch.sum(E_mat)
+        return energies
+
+    def forward(
+        self,
+        data: Dict[str, torch.Tensor],
+        training: bool = False,
+        compute_force: bool = True,
+        compute_virials: bool = False,
+        compute_stress: bool = False,
+        compute_displacement: bool = False,
+        compute_hessian: bool = False,
+    ) -> Dict[str, Optional[torch.Tensor]]:
+        output = super().forward(
+            data,
+            training=training,
+            compute_force=compute_force,
+            compute_virials=compute_virials,
+            compute_stress=compute_stress,
+            compute_displacement=compute_displacement,
+            compute_hessian=compute_hessian,
+        )
+
+        node_feats = output["node_feats"]  # [num_atoms, feat_dim]
+
+        assert "charges" in data, "Missing total charge input"
+        q_target = data["charges"].to(dtype=self.q_proj.weight.dtype)
+        q_emb = self.q_proj(q_target.unsqueeze(-1))  # [num_mols, emb_dim]
+        q_emb_per_atom = q_emb[data["batch"]]       # [num_atoms, emb_dim]
+
+        q_input = torch.cat([node_feats, q_emb_per_atom], dim=-1)  # [num_atoms, feat+charge_dim]
+
+        if self.q_head is None:
+            self.q_head = torch.nn.Sequential(
+                torch.nn.Linear(q_input.shape[-1], 32),
+                torch.nn.SiLU(),
+                torch.nn.Linear(32, 1),
+            ).to(q_input.device)
+
+        q = self.q_head(q_input).squeeze(-1)  # [num_atoms]
+        output["latent_charges"] = q
+
+        if self.use_long_range and "positions" in data and "batch" in data:
+            if self.use_coulomb:
+                E_per_mol = self.compute_realspace_coulomb_batched(data["positions"], q, data["batch"])
+            else:
+                raise NotImplementedError("Only real-space Coulomb is supported.")
+
+            output["long_range_energy"] = E_per_mol
+            output["energy"] = output["energy"] + E_per_mol
+
+        if self.penalty:
+            q_sum = scatter(q, data["batch"], dim=0, reduce="sum")
+            charge_penalty = self.lambda_charge * torch.sum((q_sum - q_target) ** 2)
+            output["charge_penalty"] = charge_penalty
+
+        return output
+
+
+class LatentChargeNormalizedMACE(ScaleShiftMACE):
+    def __init__(
+        self,
+        atomic_inter_scale: float,
+        atomic_inter_shift: float,
+        lambda_charge: float = 1.0,
+        use_long_range: bool = True,
+        use_coulomb: bool = True,
+        penalty: bool = False,
+        charge_embedding_dim: int = 32,
+        normalize_latent_charge: bool = True,
+        **kwargs,
+    ):
+        super().__init__(
+            atomic_inter_scale=atomic_inter_scale,
+            atomic_inter_shift=atomic_inter_shift,
+            **kwargs,
+        )
+
+        self.lambda_charge = lambda_charge
+        self.use_long_range = use_long_range
+        self.use_coulomb = use_coulomb
+        self.penalty = penalty
+        self.normalize_latent_charge = normalize_latent_charge
+
+        self.q_proj = torch.nn.Linear(1, charge_embedding_dim)
+        self.q_head = None  # lazy init
+
+    def compute_realspace_coulomb_batched(self, pos, q, batch_idx):
+        num_mol = batch_idx.max().item() + 1
+        energies = torch.zeros(num_mol, device=pos.device)
+        for mol_idx in range(num_mol):
+            mask = batch_idx == mol_idx
+            if mask.sum() < 2:
+                continue
+            pos_i = pos[mask]
+            q_i = q[mask]
+            rij = pos_i[:, None, :] - pos_i[None, :, :]
+            dist = torch.norm(rij + 1e-12, dim=-1)
+            qiqj = q_i[:, None] * q_i[None, :]
+            E_mat = torch.triu(qiqj / dist, diagonal=1)
+            energies[mol_idx] = torch.sum(E_mat)
+        return energies
+
+    def forward(
+        self,
+        data: Dict[str, torch.Tensor],
+        training: bool = False,
+        compute_force: bool = True,
+        compute_virials: bool = False,
+        compute_stress: bool = False,
+        compute_displacement: bool = False,
+        compute_hessian: bool = False,
+    ) -> Dict[str, Optional[torch.Tensor]]:
+        output = super().forward(
+            data,
+            training=training,
+            compute_force=compute_force,
+            compute_virials=compute_virials,
+            compute_stress=compute_stress,
+            compute_displacement=compute_displacement,
+            compute_hessian=compute_hessian,
+        )
+
+        node_feats = output["node_feats"]  # [num_atoms, feat_dim]
+
+        assert "charges" in data, "Missing total charge input"
+        q_target = data["charges"]  # [num_mols]
+        q_emb = self.q_proj(q_target.unsqueeze(-1).to(dtype=self.q_proj.weight.dtype))  # [num_mols, emb_dim]
+        q_emb_per_atom = q_emb[data["batch"]]       # [num_atoms, emb_dim]
+
+        q_input = torch.cat([node_feats, q_emb_per_atom], dim=-1)  # [num_atoms, feat+charge_dim]
+
+        if self.q_head is None:
+            self.q_head = torch.nn.Sequential(
+                torch.nn.Linear(q_input.shape[-1], 32),
+                torch.nn.SiLU(),
+                torch.nn.Linear(32, 1),
+            ).to(q_input.device)
+
+        q_raw = self.q_head(q_input).squeeze(-1)  # [num_atoms]
+
+        if self.normalize_latent_charge:
+            # Normalize charges so they sum to Q_target per molecule
+            batch = data["batch"]
+            count_per_mol = scatter(torch.ones_like(q_raw), batch, dim=0, reduce="sum")  # [num_mols]
+            q_mean = scatter(q_raw, batch, dim=0, reduce="mean")[batch]  # [num_atoms]
+            q_normalized = q_raw - q_mean  # zero-mean per molecule
+            q = q_normalized + (q_target[batch] / count_per_mol[batch])
+        else:
+            q = q_raw
+
+        output["latent_charges"] = q
+
+        if self.use_long_range and "positions" in data and "batch" in data:
+            if self.use_coulomb:
+                E_per_mol = self.compute_realspace_coulomb_batched(data["positions"], q, data["batch"])
+            else:
+                raise NotImplementedError("Only real-space Coulomb is supported.")
+
+            output["long_range_energy"] = E_per_mol
+            output["energy"] = output["energy"] + E_per_mol
+
+        if self.penalty and not self.normalize_latent_charge:
+            q_sum = scatter(q, data["batch"], dim=0, reduce="sum")
             charge_penalty = self.lambda_charge * torch.sum((q_sum - q_target) ** 2)
             output["charge_penalty"] = charge_penalty
 
