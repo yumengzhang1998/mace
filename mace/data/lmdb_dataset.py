@@ -4,7 +4,8 @@ import numpy as np
 from torch.utils.data import Dataset
 
 from mace.data.atomic_data import AtomicData
-from mace.data.utils import Configuration
+from mace.data.utils import KeySpecification, config_from_atoms
+from mace.tools.default_keys import DefaultKeys
 from mace.tools.fairchem_dataset import AseDBDataset
 
 
@@ -35,27 +36,23 @@ class LMDBDataset(Dataset):
             return None
         assert np.sum(atoms.get_cell() == atoms.cell) == 9
 
-        config = Configuration(
-            atomic_numbers=atoms.numbers,
-            positions=atoms.positions,
-            energy=atoms.calc.results["energy"],
-            forces=atoms.calc.results["forces"],
-            stress=atoms.calc.results["stress"],
-            virials=np.zeros(atoms.get_stress().shape),
-            dipole=np.zeros(atoms.get_forces()[0].shape),
-            charges=np.zeros(atoms.numbers.shape),
-            weight=1.0,
-            head=None,  # do not asign head according to h5
-            energy_weight=1.0,
-            forces_weight=1.0,
-            stress_weight=1.0,
-            virials_weight=1.0,
-            config_type=None,
-            pbc=np.array(atoms.pbc),
-            cell=np.array(atoms.cell),
+        if hasattr(atoms, "calc") and hasattr(atoms.calc, "results"):
+            if "energy" in atoms.calc.results:
+                atoms.info[DefaultKeys.ENERGY.value] = atoms.calc.results["energy"]
+            if "forces" in atoms.calc.results:
+                atoms.arrays[DefaultKeys.FORCES.value] = atoms.calc.results["forces"]
+            if "stress" in atoms.calc.results:
+                atoms.info[DefaultKeys.STRESS.value] = atoms.calc.results["stress"]
+
+        config = config_from_atoms(
+            atoms,
+            key_specification=KeySpecification.from_defaults(),
         )
-        if config.head is None:
-            config.head = self.kwargs.get("head")
+
+        # Set head if not already set
+        if config.head == "Default":
+            config.head = self.kwargs.get("head", "Default")
+
         try:
             atomic_data = AtomicData.from_config(
                 config,
