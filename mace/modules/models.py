@@ -1082,7 +1082,7 @@ class ScaleShiftMACE_with_charge(MACE):
         # Add E_0 and (scaled) interaction energy
         total_energy = e0 + inter_e
         node_energy = node_e0 + node_inter_es
-        forces, virials, stress, hessian = get_outputs(
+        forces, virials, stress, hessian, edge_forces = get_outputs(
             energy=inter_e,
             positions=data["positions"],
             displacement=displacement,

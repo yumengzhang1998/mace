@@ -302,6 +302,9 @@ class AtomicData(torch_geometric.data.Data):
         forces_weight: Optional[float] = None,
         stress_weight: Optional[float] = None,
         virials_weight: Optional[float] = None,
+        dipole_weight = torch.tensor([[1.0, 1.0, 1.0]], dtype=torch.get_default_dtype()),
+        charges_weight = torch.tensor(1.0, dtype=torch.get_default_dtype())
+
     ) -> "AtomicData":
         if heads is None:
             heads = ["default"]
@@ -371,6 +374,8 @@ class AtomicData(torch_geometric.data.Data):
             virials=virials,
             dipole=dipole,
             charges=charges,
+            dipole_weight=dipole_weight,
+            charges_weight=charges_weight,
         )
 
 

@@ -36,9 +36,7 @@ from .loss import (
 from .models import (
     MACE,
     AtomicDipolesMACE,
-    BOTNet,
     EnergyDipolesMACE,
-    ScaleShiftBOTNet,
     ScaleShiftMACE,
     ScaleShiftMACE_with_charge,
     LatentChargeplusGlobalMACE,

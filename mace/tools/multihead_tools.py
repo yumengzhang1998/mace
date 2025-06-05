@@ -70,7 +70,8 @@ def dict_head_to_dataclass(
         mean=head.get("mean", args.mean),
         std=head.get("std", args.std),
         avg_num_neighbors=head.get("avg_num_neighbors", args.avg_num_neighbors),
-        key_specification=head["key_specification"],
+        key_specification=head.get(
+            "key_specification",None),
         keep_isolated_atoms=head.get("keep_isolated_atoms", args.keep_isolated_atoms),
     )
 
@@ -85,7 +86,7 @@ def prepare_default_head(args: argparse.Namespace) -> Dict[str, Any]:
             "test_dir": args.test_dir,
             "E0s": args.E0s,
             "statistics_file": args.statistics_file,
-            "key_specification": args.key_specification,
+            # "key_specification": args.key_specification,
             "valid_fraction": args.valid_fraction,
             "config_type_weights": args.config_type_weights,
             "keep_isolated_atoms": args.keep_isolated_atoms,
